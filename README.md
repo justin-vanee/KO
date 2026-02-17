@@ -27,7 +27,7 @@ Creates a Heatmap of kinship matrix for genotypes in mouse cross.
 
 Plots implied prior distributions on heritability for a varying number of latent variables in our proposed kinship ordination model. 
 
-# Data Wrangling (Cheatgrass: Growth Chamber + Common Gardens + Physiology, for viewing only can provide raw data upon request)
+# Data Wrangling (Cheatgrass: Growth Chamber + Common Gardens + Physiology)
 
 This calls various raw data files in Data and combines them into "data_list.RData". The list includes the scaled, centered, and potentially log-transformed trait data as well as the environmental covariates and kinship matrix.
 
