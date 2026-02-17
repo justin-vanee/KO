@@ -1,0 +1,2103 @@
+---
+title: "Kinship Ordination"
+author: "Justin Van Ee"
+date: "2024-02-09"
+output: pdf_document
+---
+
+# Set up 
+
+```{r, setup}
+
+###
+### Packages
+###
+
+library(abind)
+library(bayesplot)
+library(BMTME)
+library(Boom)
+library(cmdstanr)
+library(coda)
+library(furrr)
+library(doParallel)
+library(ggrepel)
+library(ggh4x)
+library(factor.switching)
+library(Matrix)
+library(mcmcse)
+library(patchwork)
+library(posterior)
+library(qtl2)
+library(rsample)
+library(Rcpp)
+library(RcppArmadillo)
+library(RcppCNPy)
+library(readxl)
+library(scatterpie)
+library(tidyverse)
+library(wesanderson)
+
+### Set Directory (Adjust as needed)
+dir <- "/Users/justinvanee/Library/Mobile Documents/com~apple~CloudDocs/Documents/bromecast/LVM/Kinship Ordination"
+
+### Load MCMC algorithms from Rcpp
+source(file.path(dir, "algorithms", "functions.R"))
+```
+
+# Toy Example 
+
+```{r, toy example for method demonstration}
+
+###
+### Simulate Data
+###
+
+data <- 
+  simulate_data(
+    G = 20, # genotypes 
+    T = 5,  # traits 
+    E = 5,  # environments   
+    P = 1,  # covariates  
+    percent_remove = 0.1, # percent of GxE combinations to remove for out-of-sample prediction 
+    trait_cor = 0.95,     # off-diagonal elements of trait correlation matrix  
+    dir = dir
+  )
+
+###
+### Fit and Compare Models 
+###
+
+### See functions for details 
+# KO: Kinship ordination 
+# MMM: Multivariate mixed model 
+# UO: Unconstrained ordination 
+# CO: Constrained ordination
+# CCO: Concurrent ordination
+metrics_tib <- 
+  simulation_study(
+    data=data,
+    models = c("KO", "MMM", "UO", "CO", "CCO")               
+)
+
+# --- Add Effective Sampling Rate (ESR) ---
+metrics_tib <- metrics_tib %>%
+  mutate(
+    esr = ess / time,
+    esr_b = ess_b / time,
+    esr_Y = ess_Y / time
+  )
+
+# --- Pivot longer for plotting ---
+metrics_long <- metrics_tib %>%
+  pivot_longer(
+    cols = c(
+      coverage, bias, sd, cor, esr, 
+      coverage_b, bias_b, sd_b, cor_b, esr_b, 
+      coverage_Y, bias_Y, sd_Y, cor_Y, esr_Y),
+    names_to = "metric",
+    values_to = "value"
+  )  %>%
+  mutate(
+    goal = case_when(
+      str_detect(metric, "_Y$")  ~ "Posterior Prediction",
+      str_detect(metric, "_b$")  ~ "Beta Estimation",
+      TRUE                        ~ "Heritability Estimation"
+    ),
+    # remove the suffixes for clean metric names
+    metric = str_remove(metric, "_Y$|_b$")
+  )
+
+# --- Relabel and reorder metrics and models ---
+metrics_long <- metrics_long %>%
+  mutate(
+    metric = recode(metric,
+      coverage = "Coverage",
+      bias = "Bias",
+      sd = "Variability",
+      cor = "Correlation",
+      esr = "Efficiency",
+      rmse = "RMSE"
+    ),
+    metric = factor(metric, levels = c("Efficiency", "Coverage", "Bias", "Variability", "Correlation", "RMSE")),
+    goal = factor(goal, levels = c("Heritability Estimation", "Posterior Prediction", "Beta Estimation")),
+    model = factor(model, levels = c("KO", "MMM", "UO", "CO", "CCO"))
+  )
+
+# --- Define color palette ---
+wes_colors <- wes_palette("Darjeeling1", 5, type = "discrete")
+
+# --- Heritability Estimation ---
+p1 <- metrics_long %>%
+  filter(goal == "Heritability Estimation", 
+         metric != "RMSE") %>%
+  ggplot(aes(x = model, y = value, color = model, group = metric)) +
+  geom_point(size = 3) +
+  geom_line(aes(group = model), linewidth = 1, alpha = 0.6) +
+  facet_wrap(~ metric, scales = "free_y", nrow = 1) +
+  scale_color_manual(values = wes_colors) +
+  theme_bw(base_size = 14) +
+  labs(
+    x = "Model",
+    y = "Value",
+    color = "Model",
+    title = "Heritability Estimation"
+  ) +
+  theme(
+    strip.background = element_rect(fill = "grey95", color = NA),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  )
+
+# --- Beta Estimation ---
+p2 <- metrics_long %>%
+  filter(goal == "Beta Estimation", 
+         metric != "RMSE") %>%
+  ggplot(aes(x = model, y = value, color = model, group = metric)) +
+  geom_point(size = 3) +
+  geom_line(aes(group = model), linewidth = 1, alpha = 0.6) +
+  facet_wrap(~ metric, scales = "free_y", nrow = 1) +
+  scale_color_manual(values = wes_colors) +
+  theme_bw(base_size = 14) +
+  labs(
+    x = "Model",
+    y = "Value",
+    color = "Model",
+    title = "Beta Estimation"
+  ) +
+  theme(
+    strip.background = element_rect(fill = "grey95", color = NA),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  )
+
+# --- Posterior Prediction ---
+p3 <- metrics_long %>%
+  filter(goal == "Posterior Prediction") %>%
+  ggplot(aes(x = model, y = value, color = model, group = metric)) +
+  geom_point(size = 3) +
+  geom_line(aes(group = model), linewidth = 1, alpha = 0.6) +
+  facet_wrap(~ metric, scales = "free_y", nrow = 1) +
+  scale_color_manual(values = wes_colors) +
+  theme_bw(base_size = 14) +
+  labs(
+    x = "Model",
+    y = "Value",
+    color = "Model",
+    title = "Posterior Prediction"
+  ) +
+  theme(
+    strip.background = element_rect(fill = "grey95", color = NA),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom"
+  )
+
+# Display separately
+p1 / p2 / p3 # stacked 
+
+```
+
+
+
+# Heatmap of kinship 
+
+```{r, heatmap of kinship}
+
+
+# Load the example DO mouse data from the qtl2 package
+dirpath <- system.file("extdata", "iron.zip", package = "qtl2")
+cross <- read_cross2(dirpath)
+
+# Calculate genotype probabilities with an error probability of 0.002
+probs <- calc_genoprob(cross, map = cross$gmap, error_prob = 0.002)
+
+# Calculate the kinship matrix using the overall method
+kinship <- calc_kinship(probs)
+
+# Define a custom color palette (white → red)
+my_colors <- colorRampPalette(c("white", "red"))(100)
+
+# Visualize the kinship matrix for the first 50 individuals
+heatmap(cov2cor(kinship[1:7, 1:7]),
+        symm = TRUE,
+        labRow = NA,    # removes row labels
+        labCol = NA,    # removes column labels
+        col = my_colors)
+```
+
+
+
+# Prior Predictive Checks Heritability 
+
+```{r, Prior Predictive Checks Heritability }
+
+# Values of q to explore
+q_values <- c(1, 5, 10, 20)
+
+# Simulate for each q and prior type
+prior_data <- expand.grid(q = q_values,
+                          hierarchical = c(TRUE, FALSE)) %>%
+  mutate(h2 = map2(q, hierarchical, ~ simulate_h2_prior(q = .x, hierarchical = .y))) %>%
+  unnest(h2) %>%
+  mutate(
+    prior_type = ifelse(hierarchical, "Hierarchical", "Independent"),
+    prior_type = factor(prior_type, levels = c("Independent", "Hierarchical"))
+  )
+
+# Facet grid plot
+heritability_prior <-
+ggplot(prior_data, aes(x = h2), color = "black") +
+  geom_histogram(bins = 50, position = "identity", alpha = 0.6, color = "black") +
+  facet_grid(prior_type ~ q) +
+  theme_bw(base_size = 14) +
+  labs(
+    x = expression(h^2),
+    y = "Count",
+    fill = "Prior Type"
+  )
+
+# Save plot 
+ggsave(plot=heritability_prior, 
+       filename=file.path(dir, "Figures", "heritability_prior.png"),  
+       dpi=1000, height=5, width=10)
+
+```
+
+
+# Data Wrangling (Cheatgrass: Growth Chamber + Common Gardens + Physiology)
+
+```{r, Real Data Preparation (Cheatgrass: Growth Chamber + Common Gardens + Physiology)} 
+
+### 
+### Data (Growth Chamber)
+###
+
+growth_chamber_all <- 
+  read.csv(file.path(dir, "Data", "BRTE.data.csv")) %>%
+  ### Survival/Survival trait of 2-3 replicates in a different file
+  left_join(
+    readxl::read_xlsx(file.path(dir, "Data", "CheatgrassSeeds_psu2021growout_data.xlsx")),
+    by=c("PopNum", "NewSiteCode")
+  ) %>%
+  mutate(
+    N_survived=as.numeric(N_survived),
+    Survival=N_survived/N_planted,
+    Survival=if_else(is.na(Survival) & !is.na(N_planted), 0, Survival) ### These six genotypes didn't even germinate and therefore didn't survive 
+  )
+
+Y_growth_chamber <- 
+  growth_chamber_all %>%
+  dplyr::select("FT"="DTF", 
+                "Seed(n)"="seedNumber",
+                "Seed(m)"="IndividualSeedMass",
+                "Biomass"="biomass",
+                "Tiller(n)"="tillersN",
+                "Height"="height",
+                "Growth"="growth",
+                "Leaves(n)"="leavesN", 
+                "Inflorescence(h)"="panicleHeight",
+                "Survival") %>% ### set traits names equal to what we observe in Figure 4 of Gamba manuscript
+  as.matrix() #%>%
+  #scale()
+
+### Get rows with at least one trait not NA 
+keep_idx=rowSums(is.na(Y_growth_chamber))<ncol(Y_growth_chamber)
+growth_chamber=growth_chamber_all[keep_idx,]
+Y_growth_chamber=Y_growth_chamber[keep_idx,]
+
+### Genotypes Growth Chamber 
+genotypes_growth_chamber <- growth_chamber$NewSiteCode
+
+###
+### Data (Common Gardens)
+###
+
+# Read in data that matches kinship matrix position and genotype ID
+kinshipIDs <- read.csv(file=file.path(dir, "Data","93cg_genotypes.csv"))
+
+### This has all traits for all 4 common garden sites from 2022
+allsites_flower_harvest <-
+  read.csv(file=file.path(dir, "Data","cg_cleandata.csv")) %>%
+# Subset trait data for only genotypes that we have kinship data for
+  filter(genotype %in% kinshipIDs$genotype) # Right now this only drops 329 plants total and 4 genotypes
+
+### Genotypes Common Gardens  
+genotypes_common_gardens <- 
+  kinshipIDs %>%
+  filter(genotype %in% unique(allsites_flower_harvest$genotype)) %>%
+  pluck("NewSiteCode") %>%
+  sort()
+  
+###
+### Collect genotypes
+###
+
+genotypes_all <-
+  tibble(NewSiteCode=unique(c(genotypes_growth_chamber, genotypes_common_gardens))) %>%
+  left_join(growth_chamber_all, by="NewSiteCode") %>%
+  arrange(NewSiteCode) %>%
+  filter(!is.na(id)) # 3 genotypes not sequenced (i.e., no kinship data)
+dim(genotypes_all)
+
+### Extract dominant ancestry of each genotype 
+Ancestry_labels=c("Mediterranean/Middle East", "Northern Europe", "Eastern Europe", "Central Europe")
+Ancestry <- genotypes_all %>%
+    mutate(across(V1:V4, round, digits=2),
+           V_max=purrr::pmap_dbl(list(V1, V2, V3, V4), max)) %>%
+    mutate(Ancestry=case_when(V1==V_max~Ancestry_labels[1],
+                              V2==V_max~Ancestry_labels[2],
+                              V3==V_max~Ancestry_labels[3],
+                              V4==V_max~Ancestry_labels[4])) %>%
+    dplyr::select(Ancestry, "NewSiteCode", "V1":"V4") %>%
+    mutate(Ancestry_num=as.numeric(as.factor(Ancestry)))
+
+
+# Read in data that matches kinship matrix position and genotype ID
+# Read in kinship matrix for 307 genotypes 
+kinship <- read.table(file.path(dir, "Data","BRTE307_IBSmatrix.txt"), sep=",")
+K_joint <- as.matrix(kinship[genotypes_all$id,genotypes_all$id])
+
+# Put genotype numbers on rows and columns
+rownames(K_joint) <- as.factor(genotypes_all$NewSiteCode)
+colnames(K_joint) <- as.factor(genotypes_all$NewSiteCode)
+
+###
+### Back to growth chamber data manipulations 
+###
+
+Y_growth_chamber <- 
+  growth_chamber_all %>%
+  filter(NewSiteCode %in% genotypes_all$NewSiteCode) %>% ### This ensures we add the extra 2 genotypes observed in common gardens but not in grennhouse 
+  arrange(NewSiteCode) %>%
+  dplyr::select("FT"="DTF", 
+                "Seed(n)"="seedNumber",
+                "Seed(m)"="IndividualSeedMass",
+                "Biomass"="biomass",
+                "Tiller(n)"="tillersN",
+                "Survival",
+                "Height"="height",
+                "Growth"="growth",
+                "Leaves(n)"="leavesN", 
+                "Inflorescence(h)"="panicleHeight") %>% ### set traits names equal to what we observe in Figure 4 of Gamba manuscript
+  mutate(`Seed(n)`=log(`Seed(n)`),
+          Biomass=log(Biomass),
+         `Tiller(n)`=log(`Tiller(n)`)) %>% ### Log transform right skewed distribution related to fitness 
+  as.matrix() #%>% # Doing scaling for Y_growth_chamber and Y_common_gardens combined 
+  #scale()
+
+###
+### Back to Common gardens data manipulations 
+###
+
+### Calculate Seed(m) and Biomass and set all attributes to NA for plants that didn't survive to Survival
+allsites_flowered <- 
+  allsites_flower_harvest %>%
+  filter(year == 2022) %>%
+  mutate(Survival=if_else(seed_count_total>0, 1, 0),
+         "FT"=if_else(Survival==0, NA, first_flower),
+         "Seed(n)"=if_else(Survival==0, NA, seed_count_total), # Checked this is always either 0 or NA if live_harvest=="N"
+         "Biomass"=if_else(Survival==0, NA, veg_mass),
+         "Tiller(n)"=if_else(Survival==0, NA, tillers),
+         "Inflorescence(m)"=if_else(Survival==0, NA, inflor_mass),
+         "Seed(m)"=`Inflorescence(m)`/`Seed(n)` * 1000, # Megan confirmed this is correct way to calculate Seed mass (1000 miligrams to grams)
+         "Seed(m)"=if_else(`Seed(m)`==0, NA, `Seed(m)`), # Two obs at SS where Seed(n)>0 but inflor_mass=0 
+         site_numeric=as.numeric(as.factor(site)),
+         density_numeric=as.numeric(as.factor(density))-1,
+         gravel_numeric=as.numeric(as.factor(albedo))-1,
+         year_numeric=as.numeric(as.factor(year))-1,
+         environment=site_numeric+density_numeric*4+gravel_numeric*8,
+         Biomass=Biomass * 1000) %>% # Need switch from grams to miligrams to match growth chamber data. 
+  group_by(genotype, environment) %>%
+  summarise(across("Survival":"Seed(m)", ~mean(.x, na.rm=TRUE))) %>%
+  dplyr::select(genotype,
+                environment,
+                "FT",
+                "Seed(n)",
+                "Seed(m)",
+                "Biomass",
+                "Tiller(n)",
+                "Survival") %>%
+  mutate(`Seed(n)`=log(`Seed(n)`),
+          Biomass=log(Biomass),
+         `Tiller(n)`=log(`Tiller(n)`)) %>%  ### Log transform right skewed distributions
+  left_join(kinshipIDs, by="genotype") %>%
+  filter(!is.na(NewSiteCode))  %>%
+  ungroup()
+
+### Function to calculate standard error
+sem <- function(x) {
+  sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+}
+
+### Check that all traits at all sites are bounded away (at least 2 SE) from 0
+allsites_flowered %>%
+  group_by(environment) %>%
+  summarise(
+    across(
+      FT:Survival,
+      list(
+        mean = ~mean(.x, na.rm = TRUE),
+        sem  = ~sd(.x, na.rm = TRUE) / sqrt(sum(!is.na(.x))),
+        se_from_0 = ~mean(.x, na.rm = TRUE) /
+                    (sd(.x, na.rm = TRUE) / sqrt(sum(!is.na(.x))))
+      ),
+      .names = "{.col}_{.fn}"
+    )
+  )
+  
+Environments_classification <-
+  allsites_flower_harvest %>%
+  mutate(site_numeric=as.numeric(as.factor(site)),
+         density_numeric=as.numeric(as.factor(density))-1,
+         gravel_numeric=as.numeric(as.factor(albedo))-1,
+         year_numeric=as.numeric(as.factor(year))-1,
+         environment=site_numeric+density_numeric*4+gravel_numeric*8) %>%
+  dplyr::select(site, density, albedo, environment) %>% 
+  distinct() %>%
+  arrange(environment)
+
+### Bring in Physiology Data 
+### This has six traits from physiology study measured across 27 genotypes in 2022-2023 in two environments 
+genotype_codes <- read.csv(file=file.path(dir, "Data", "BRTEcg_genotypesCode.csv"))
+Physiology <- 
+  read.csv(file=file.path(dir, "Data", "WC_BZ_2022_2023.csv")) %>%
+  ### Common garden data is currently only 2022
+  filter(Year==2022) %>%
+  ### Match to nomenclature in "Environments_classification"
+  mutate(albedo=if_else(Gravel.color=="White", "white", "black"),
+         density=if_else(Density=="Low", "lo", "hi"),
+         site=if_else(Site=="Balzor", "BA", "WI")) %>%
+  ### Joint "Environments_classification" for environment number 
+  left_join(Environments_classification, by=c("albedo", "site", "density")) %>% 
+  ### Add new site code identifier for genotypes 
+  left_join(genotype_codes, by=c("Genotype"="genotype")) %>%
+  ### Missing NewSiteCode for genotype 11, currently we'll just remove it
+  filter(!is.na(NewSiteCode)) %>%
+  ### Select columns we want 
+  dplyr::select(environment, NewSiteCode, 
+                "Phenological"=Phen_score, 
+                "Freeze"=Freezing_Point,
+                "Fv/Fm"=dFvFm,
+                "SLA"=SLA_m2_kg) %>%
+  ### Get genotype means 
+  group_by(environment, NewSiteCode) %>%
+  summarise(across("Phenological":"SLA", ~mean(.x, na.rm=TRUE))) %>%
+  ungroup() %>%
+  mutate(across("Phenological":"SLA", ~scale(.x)))
+
+### Kinship matrix (filter for genotypes just observed in common gardens)
+genotypes_Physiology=sort(unique(Physiology$NewSiteCode))
+
+### Extract number of traits from Physiology
+p_D <- 
+  Physiology %>%
+  dplyr::select("Phenological":"SLA") %>%
+  ncol()
+traits_physiology_study <- c("Phenological", "Freeze", "Fv/Fm", "SLA")
+
+###
+### Extract all traits and format as array with rows=genotypes, columns=traits, environments=slices 
+###
+
+n_g_CG=length(genotypes_common_gardens) # genotypes 
+traits_common_garden <- c("FT", "Seed(n)", "Seed(m)", "Biomass", "Tiller(n)", "Survival")
+p_CG=length(traits_common_garden) # traits
+n=length(unique(allsites_flower_harvest$site))*length(unique(allsites_flower_harvest$albedo))*length(unique(allsites_flower_harvest$density)) # environments
+
+Y_common_gardens_tmp <- vector("list", length=n)
+for(i in 1:n){
+  Y_mat_CG=matrix(NA, n_g_CG, p_CG)
+  Y_mat_D=matrix(NA, n_g_CG, p_D)
+  for(j in 1:n_g_CG){
+    tmp=allsites_flowered %>%
+          filter(environment==i,
+                 NewSiteCode==genotypes_common_gardens[j]) %>%
+          dplyr::select(`FT`:`Survival`) %>%
+          as.matrix() %>%
+          c()
+    if(length(tmp)>0){
+      Y_mat_CG[j,] <-
+        allsites_flowered %>%
+        filter(environment==i,
+               NewSiteCode==genotypes_common_gardens[j]) %>%
+        dplyr::select(`FT`:`Survival`) %>%
+        as.matrix() %>%
+        c()
+    }
+    if(i %in% unique(Physiology$environment) & 
+       genotypes_common_gardens[j] %in% unique(filter(Physiology, environment==i)$NewSiteCode)){
+      Y_mat_D[j,] <-
+        Physiology %>%
+        filter(environment==i,
+               NewSiteCode==genotypes_common_gardens[j]) %>%
+        dplyr::select(`Phenological`:`SLA`) %>%
+        as.matrix() %>%
+        c()
+    }
+  }
+  if(i %in% unique(Physiology$environment)){
+    Y_common_gardens_tmp[[i]]=as.matrix(cbind(Y_mat_CG, Y_mat_D))
+  } else {
+    Y_common_gardens_tmp[[i]]=as.matrix(Y_mat_CG)
+  }
+}
+
+###
+### Combine data sources, treat growth_chamber data as one more environment
+###
+
+### Joint scaling for all traits common across data sources 
+Y_joint <-
+  do.call(rbind, map(Y_common_gardens_tmp, ~.x[,1:p_CG])) %>%
+  rbind(Y_growth_chamber[,1:p_CG]) %>%
+  scale() 
+
+### Create list for joint LVM model 
+Y = vector("list", n+1)
+Y_common_gardens = vector("list", n)
+### Fill in common gardens 
+for(i in 1:n){
+  idx = ((i-1) * n_g_CG + 1):(n_g_CG * i)
+  if(i %in% c(8, 13)){
+    Y[[i]] = Y_common_gardens[[i]] = cbind(Y_joint[idx,], Y_common_gardens_tmp[[i]][,(p_CG+1):(p_CG+p_D)])
+    colnames(Y[[i]]) = c(traits_common_garden, traits_physiology_study)
+    
+  } else {
+    Y[[i]] = Y_common_gardens[[i]] = cbind(Y_joint[idx,]) 
+    colnames(Y[[i]]) = traits_common_garden
+  }
+}
+
+### Add growth_chamber 
+n_g = nrow(genotypes_all)
+idx = ((n) * n_g_CG + 1):((n) * n_g_CG + n_g)
+Y[[n+1]] = cbind(Y_joint[idx,], scale(Y_growth_chamber[,-c(1:p_CG)]))
+
+### Different W all environments 
+W_common_gardens=vector("list", n)
+for(i in 1:n){
+### There were only 15 genotypes that flowered in Baltzor in white gravel and low density. 
+### As a result, there is not enough data to calculate cross correlations between CG and D traits 
+### This fills in those cross correlations with what was observed at Wildcat (environment 8)
+if(i==13){ 
+  Y_cov <-
+    Y[[8]] %>%
+    cor(use="pairwise.complete.obs") 
+  Y_cov13 <-
+    Y[[i]] %>%
+    cor(use="pairwise.complete.obs") 
+  Y_cov[1:p_CG,1:p_CG] <- Y_cov13[1:p_CG,1:p_CG]
+  Y_cov[(p_CG+1):(p_CG+p_D),(p_CG+1):(p_CG+p_D)] <- Y_cov13[(p_CG+1):(p_CG+p_D),(p_CG+1):(p_CG+p_D)]
+} else {
+   Y_cov <-
+    Y[[i]] %>%
+    cor(use="pairwise.complete.obs") 
+}
+Y_eigen_cov <- 
+  Y_cov %>%
+  eigen()
+### Find number of principal components needed to capture 90% of variation 
+var=cumsum(Y_eigen_cov$values) / sum(Y_eigen_cov$values)
+q=which(var>0.90)[1] ### number of principal components 
+U_common_gardens=Y_eigen_cov$vectors[,1:q]
+Lambda_common_gardens=Y_eigen_cov$values[1:q]
+W_common_gardens[[i]]=U_common_gardens%*%diag(sqrt(Lambda_common_gardens))
+}
+
+### Find Maximum likelihood estimate for W (see quation (4), Wang 2010)
+Y_eigen_cov <- 
+  Y[[n+1]] %>%
+  cor(use="pairwise.complete.obs") %>%
+  eigen()
+### Find number of principal components needed to capture 90% of variation 
+var=cumsum(Y_eigen_cov$values) / sum(Y_eigen_cov$values)
+q=which(var>0.90)[1] ### number of principal components 
+### Find nu
+U_growth_chamber=Y_eigen_cov$vectors[,1:q]
+Lambda_growth_chamber=Y_eigen_cov$values[1:q]
+W_growth_chamber=U_growth_chamber%*%diag(sqrt(Lambda_growth_chamber))
+
+### Bind together Ws (different by environment)
+W=c(W_common_gardens, list(W_growth_chamber))
+
+
+### Bring in bioclimate variables 
+bioclim <- read.csv(file.path(dir, "Data", "BioclimateOfOrigin_AllGenotypes.csv"))
+
+# Get idx of sites 
+idx_sites=which(bioclim$site_code %in% c("BA", "CH", "SS", "WI"))
+
+# Center and scale bioclimatic covariates
+bioclim[,6:ncol(bioclim)]=apply(bioclim[,6:ncol(bioclim)], 2, scale)
+
+# Run PCA
+pca_out=prcomp(bioclim[,6:ncol(bioclim)])
+
+### Joint model covariate and priors 
+X_common_gardens <-
+  Environments_classification %>%
+  mutate(intercept=1,
+         density_n=as.numeric(density=="hi"), # These effects aren't estimated well in the data, huge variance 
+         gravel_n=as.numeric(albedo=="black"),
+         interaction=gravel_n*density_n,
+         PC1=rep(pca_out$x[idx_sites, 1], 4),
+         PC2=rep(pca_out$x[idx_sites, 2], 4)) %>%
+  dplyr::select("intercept":"PC2") %>%
+  as.matrix()
+n=length(Y)
+X_growth_chamber=matrix(0,1,ncol(X_common_gardens))
+X=rbind(X_common_gardens, X_growth_chamber)
+d=ncol(X)
+z=c(rep(1,nrow(X)-1),0)
+X=cbind(
+  c(rep(0,n-1), 1), ### add column for growth_chamber mean 
+  X
+)
+d=ncol(X)
+X_list=vector("list", n)
+for(i in 1:n){
+  p=ncol(Y[[i]])
+  n_g=nrow(Y[[i]])
+  X_unique=matrix(NA, n_g, d)
+  for(l in 1:d){
+    X_unique[,l]=rep(X[i,l], each=n_g)
+  }
+  X_list[[i]]=X_unique
+}
+
+### Get list of missing observations 
+NA_idx=vector("list", n)
+for(i in 1:n){
+  NA_idx[[i]]=which(is.na(Y[[i]]), arr.ind=TRUE)-1
+}
+
+### Hyperparameters 
+q_K=q_e=0.001
+r_K=r_e=1/q_e
+mu_beta=rep(0, d)
+Sigma_beta=diag(100^2, d)
+mu_0=0
+sigma2_0=100^2
+scale=1 
+scale_zeta2=1 
+
+### Kinship matrix (filter for genotypes just observed in common gardens)
+K_common_gardens=K_joint[genotypes_common_gardens,genotypes_common_gardens]
+K_list=vector("list", 2)
+K_list[[1]]=K_common_gardens
+K_list[[2]]=K_joint
+### Filter common gardens array for observed genentypes 
+genotypes_common_gardens_idx=which(colnames(K_joint) %in% genotypes_common_gardens)
+
+### MCMC iterations 
+n_mcmc=20000
+
+### Indexes for trait correlations 
+p_idx=vector("list", length(Y))
+### label traits 0-5 for 6 common garden traits, 6-9 for Physiology traits, and 10:13 growth_chamber traits
+for(i in 1:n){
+  p_idx[[i]]=1:ncol(Y[[i]])-1 
+}
+p_idx[[length(Y)]]=c(1:6,11:14)-1
+p_tot=14
+### Indexes for what traits in which environments 
+n_idx=replicate(p_tot, 1:17-1, simplify = FALSE)
+n_idx[6:10]=replicate(length(7:11), c(8,13)-1, simplify = FALSE) # Physiology traits only in two common gardens environments 
+n_idx[11:p_tot]=replicate(length(12:p_tot), 17-1, simplify = FALSE) # The remainder of traits are only in growth_chamber 
+
+### Extract missing data in each environment 
+n=length(Y)
+NA_idx=vector("list", n)
+for(i in 1:n){
+  NA_idx[[i]]=which(is.na(Y[[i]]), arr.ind=TRUE)-1
+}
+
+fix_signs <- function(loadings) {
+  # loadings: a matrix like prcomp$rotation or eig$vectors
+  fixed <- loadings
+  for (j in 1:ncol(loadings)) {
+    # find the variable with largest absolute loading in this PC
+    max_idx <- which.max(abs(loadings[, j]))
+    # if that loading is negative, flip the whole column
+    if (loadings[max_idx, j] < 0) {
+      fixed[, j] <- -fixed[, j]
+    }
+  }
+  fixed
+}
+
+### Save as output list 
+data_list <- 
+  list(Y=Y, Physiology=Physiology, W=W, X=X,
+       K_list=K_list, X_list=X_list, NA_idx=NA_idx,
+       q_K=q_K, r_K=r_K, q_e=q_e, r_e=r_e, 
+       mu_0=mu_0, sigma2_0=sigma2_0, scale=scale, scale_zeta2=scale_zeta2,
+       Environments_classification=Environments_classification,
+       mu_beta=mu_beta,Sigma_beta=Sigma_beta, Ancestry=Ancestry,
+       p_idx=p_idx, p_tot=p_tot, n_idx=n_idx)
+
+
+### Save list 
+save(data_list, file=file.path(dir, "Outputs", "data_list.RData"))
+```
+
+
+
+# Parallel Simulation Study 
+
+## Simulate Datasets 
+
+```{r, Parallel Simulation Study Heritability Estimation}
+
+###
+### Simulate Datasets 
+###
+
+set.seed(3235)
+
+# Define the simulation settings
+sim_settings <- list(
+  list(G = 50, T = 5,  E = 5),  # many genotypes 
+  list(G = 25, T = 10, E = 5), # many traits 
+  list(G = 25, T = 5,  E = 10)  # many environments 
+)
+
+# Number of datasets per setting
+n_sim <- 50
+
+# Function to simulate multiple datasets per setting
+simulate_multiple <- function(G, T, E, n_sim, P = 1, percent_remove = 0.1) {
+  map(1:n_sim, ~ simulate_data(G = G, T = T, E = E, P = P, percent_remove = percent_remove, dir = dir))
+}
+
+# Create datasets for all settings
+Start=Sys.time()
+datasets <- map(sim_settings, ~simulate_multiple(.x$G, .x$T, .x$E, n_sim)) %>%
+  flatten()  # <-- flatten one level
+End=Sys.time()
+difftime(End,Start) # ~11 seconds for n_sim=50
+
+# save 
+save(datasets, file=file.path(dir, "Outputs", "datasets.RData"))
+```
+
+## Run Simulation Study in Parallel 
+
+```{r, Fit Models to Simulated Data}
+# load datasets 
+load(file=file.path(dir, "Outputs", "datasets.RData"))
+
+# Set up parallel plan
+plan(multisession, workers = 10)
+
+# "datasets" is a flat list of simulated datasets
+Start <- Sys.time()
+
+safe_simulation_study <- safely(simulation_study)
+
+results <- future_map(
+  datasets,
+  ~safe_simulation_study(data = .x),
+  .progress = TRUE,
+  models = c("KO", "MMM", "UO", "CO", "CCO"),               
+  chains = 1, parallel_chains = 1,
+  iter_warmup = 200, iter_sampling = 1000,
+  refresh = 100,
+  seed = TRUE
+)
+
+# Separate successes from errors
+metrics_out <- map_dfr(results, "result", .id = "dataset_id")
+errors <- map(results, "error")
+
+
+End <- Sys.time()
+difftime(End, Start) # ~ 7 hours with 10 workers 
+
+# save 
+save(metrics_out, file=file.path(dir, "Outputs", "metrics_out.RData"))
+```
+
+## Make Simulation Study Plots 
+
+```{r, Simulation Study Plots}
+load(file=file.path(dir, "Outputs", "metrics_out.RData"))
+
+# --- Create dataset column as proper expressions ---
+metrics_long <- metrics_out %>%
+  mutate(
+    esr = log10( ess / time ),
+    esr_b =  log10( ess_b / time ) ,
+    esr_Y =  log10( ess_Y / time )
+  ) %>%
+  pivot_longer(
+    cols = c(
+      coverage, bias, sd, cor, esr, 
+      coverage_b, bias_b, sd_b, cor_b, esr_b, 
+      coverage_Y, bias_Y, sd_Y, cor_Y, esr_Y),
+    names_to = "metric",
+    values_to = "value"
+  )  %>%
+  mutate(
+    goal = case_when(
+      str_detect(metric, "_Y$")  ~ "Posterior Prediction",
+      str_detect(metric, "_b$")  ~ "Beta Estimation",
+      TRUE                        ~ "Heritability Estimation"
+    ),
+    # remove the suffixes for clean metric names
+    metric = str_remove(metric, "_Y$|_b$"),
+    metric = factor(
+      metric, 
+      levels = c("esr", "coverage", "bias", "sd", "cor"),
+      labels = c("Efficiency", "Coverage", "Bias", "Variability", "Correlation")
+    ),
+    goal = factor(goal, levels = c("Heritability Estimation", "Posterior Prediction", "Beta Estimation")),
+    model = factor(model, levels = c("MMM", "KO", "CCO", "CO", "UO")),
+    dataset = case_when(
+      G == 50 ~ "G==50",
+      T == 10 ~ "T==10",
+      E == 10 ~ "E==10",
+      TRUE ~ "Other"
+    ),
+    dataset = factor(dataset, levels = c("G==50", "T==10", "E==10"))
+  ) %>%
+  filter(
+    metric != "Correlation", # This metric doesn't add much and is a lot to plot 
+    !(model %in% c("CCO", "UO", "CO") & goal == "Heritability Estimation"), # Remove metrics that certain models can't do 
+    !(model %in% c("UO") & goal == "Beta Estimation")
+    )
+
+# --- Split by goal --- 
+metrics_H2 <- metrics_long %>% filter(goal == "Heritability Estimation") 
+metrics_beta <- metrics_long %>% filter(goal == "Beta Estimation") 
+metrics_pred <- metrics_long %>% filter(goal == "Posterior Prediction")
+
+# --- Boxplot function ---
+plot_box <- function(df, title) {
+  ggplot(df, aes(x = model, y = value, fill = model)) +
+    geom_boxplot(outlier.shape = NA) +   # Remove outliers
+    facet_grid(metric ~ dataset, scales = "free", labeller = label_parsed) +
+    scale_fill_manual(values = wes_palette("Darjeeling1"),
+                      labels = 
+                        c("Multivariate Mixed Model", 
+                          "Kinship Ordination", 
+                          "Concurrent Ordination",
+                          "Constrained Ordination",
+                          "Unconstrained Ordination")) +
+    theme_bw(base_size = 14) +
+    labs(
+      x = "Model",
+      y = "Value",
+      fill = "Model",
+      title = title
+    ) +
+    theme(
+      strip.background = element_rect(fill = "grey90", color = NA),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "bottom"
+    )
+}
+
+# --- Plot ---
+p_H2 <- plot_box(metrics_H2, "Heritability Estimation")
+p_beta <- plot_box(metrics_beta, "Beta Estimation")
+p_pred <- plot_box(metrics_pred, "Posterior Prediction")
+
+
+p_H2
+p_beta
+p_pred
+
+# --- Save ---
+ggsave(plot=p_H2, 
+       filename=file.path(dir, "Figures", "Heritability_boxblot.png"),  
+       dpi=1000, height=7, width=7)
+
+ggsave(plot=p_beta, 
+       filename=file.path(dir, "Figures", "beta_boxblot.png"),  
+       dpi=1000, height=7, width=10)
+
+ggsave(plot=p_pred, 
+       filename=file.path(dir, "Figures", "Prediction_boxblot.png"),  
+       dpi=1000, height=7, width=11)
+```
+
+# Real Data Analysis (Cheatgrass: Growth Chamber + Common Gardens + Physiology)
+
+## Data Preparation (need to run for all scripts below)
+
+```{r, Real Data Analysis (Cheatgrass: Growth Chamber + Common Gardens + Physiology)}
+
+### Load Data 
+load(file=file.path(dir, "Outputs", "data_list.RData"))
+
+###
+###
+### Reformat data for model fitting with stan
+###
+###
+
+### Full kinship matrix  
+K <- data_list$K_list[[2]]
+genotypes <- colnames(K)
+
+###
+### Common Garden
+###
+
+### Dimensions 
+E <- 16 
+traits_common_garden <- c("FT", "Seed(n)", "Seed(m)", "Biomass", "Tiller(n)", "Survival")
+T <- length(traits_common_garden)
+G <- nrow(data_list$Y[[1]])
+
+### Data
+data_common_garden <-
+  map(1:E, ~ data_list$Y[[.x]][, 1:6]) %>%
+  abind(along = 1) %>%
+  # Traits have been scaled to have mean 0 variance 1 across all environments 
+  # This includes the growth chamber that we are excluding here so need to do rescale 
+  # Silence this for creating data all because then we want unscaled 
+  #scale() %>% 
+  `colnames<-`(traits_common_garden) %>%
+  as.data.frame() %>%
+  mutate(environment = as.factor(rep(1L:E, each = G)),
+         genotype = rep(colnames(data_list$K_list[[1]]), E),
+         genotype = factor(genotype, levels = genotypes)) %>%
+  gather(key="trait", value = "value", -c("genotype", "environment")) %>%
+  mutate(trait = factor(trait, levels=traits_common_garden, labels=traits_common_garden)) %>%
+  # Want all unobserved levels to get included as NA for posterior prediction 
+  complete(
+    genotype = levels(genotype),
+    trait = levels(trait),
+    environment = levels(environment),
+    fill = list(value = NA)
+  ) %>%
+  mutate(
+    g = as.integer(factor(genotype, levels = genotypes)),
+    t = as.integer(factor(trait, levels = traits_common_garden)),
+    e = as.integer(factor(environment, levels = 1:E))
+  ) %>%
+  arrange(e, t, g)
+        
+### Get rows with NAs 
+NAs <- 
+  data_common_garden$value %>%
+  is.na() %>%
+  which()
+
+### Build the list
+list_common_garden <- list(
+  # Dimensions 
+  N = length(data_common_garden$value[-NAs]),
+  N_p = length(data_common_garden$value[NAs]),
+  P = ncol(data_list$X[-17,-1]),
+  G = max(data_common_garden$g),
+  E = max(data_common_garden$e),
+  T = max(data_common_garden$t),
+  T_a = max(data_common_garden$t),
+  q = 4, 
+  # In Sample 
+  g_idx = data_common_garden$g[-NAs], 
+  e_idx = data_common_garden$e[-NAs],   
+  t_idx = data_common_garden$t[-NAs],   
+  y = data_common_garden$value[-NAs],
+  X = data_list$X[-17,-1],
+  K = K,
+  # Out of sample
+  g_idx_p = data_common_garden$g[NAs], 
+  e_idx_p = data_common_garden$e[NAs],   
+  t_idx_p = data_common_garden$t[NAs]  
+)
+
+###
+### Physiology Study
+###
+
+### dimensions  
+traits_physiology_study <- c("Phenological", "Freeze", "Fv/Fm",  "SLA")
+physiology_genotypes <- unique(data_list$Physiology$NewSiteCode)
+
+### Data
+data_physiology <-
+  data_list$Physiology %>%
+  as.data.frame() %>%
+  mutate(environment = factor(environment, levels = c(8, 13)),
+         genotype = factor(NewSiteCode, levels = genotypes)) %>%
+  dplyr::select(-c("NewSiteCode")) %>%
+  gather(key="trait", value = "value", -c("genotype", "environment")) %>%
+  mutate(trait = factor(trait, levels=traits_physiology_study, labels=traits_physiology_study)) %>%
+  # Want all unobserved levels to get included as NA for posterior prediction 
+  complete(
+    genotype = levels(genotype),
+    trait = levels(trait),
+    environment = levels(environment),
+    fill = list(value = NA)
+  ) %>%
+  mutate(
+    g = as.integer(factor(genotype, levels = genotypes)),
+    t = as.integer(factor(trait, levels = traits_physiology_study)),
+    e = as.integer(factor(environment))
+  ) %>%
+  arrange(e, t, g)
+        
+### Get rows with NAs 
+NAs <- 
+  data_physiology$value %>%
+  is.na() %>%
+  which()
+
+### Build the list
+list_physiology_study <- list(
+  # Dimensions 
+  N = length(data_physiology$value[-NAs]),
+  N_p = length(data_physiology$value[NAs]),
+  P = 2,
+  G = max(data_physiology$g),
+  E = max(data_physiology$e),
+  T = max(data_physiology$t),
+  T_a = 0, # too few environments to justify pooling 
+  q = 2, 
+  # In Sample 
+  g_idx = data_physiology$g[-NAs], 
+  e_idx = data_physiology$e[-NAs],   
+  t_idx = data_physiology$t[-NAs],   
+  y = data_physiology$value[-NAs],
+  X = diag(1, 2),
+  K = K,
+  # Out of sample
+  g_idx_p = data_physiology$g[NAs], 
+  e_idx_p = data_physiology$e[NAs],   
+  t_idx_p = data_physiology$t[NAs]  
+)
+
+###
+### Growth Chamber
+###
+
+### Dimensions 
+traits_growth_chamber <- 
+  c("FT", "Seed(n)", "Seed(m)", "Biomass", "Tiller(n)",  
+    "Survival","Height", "Growth", "Leaves(n)",  "Inflorescence(h)")
+
+data_growth_chamber <-
+  data_list$Y[[17]] %>%
+  # Traits have been scaled to have mean 0 variance 1 across all environments 
+  # This includes the common gardebs that we are excluding here so need to do rescale 
+  # Silence if creating data_all
+  #scale() %>% 
+  `colnames<-`(traits_growth_chamber) %>%
+  as.data.frame() %>%
+  mutate(environment = factor(c(17)),
+         genotype = factor(genotypes, levels = genotypes)) %>%
+  gather(key="trait", value = "value", -c("genotype", "environment")) %>%
+  mutate(trait = factor(trait, levels=traits_growth_chamber, labels=traits_growth_chamber)) %>%
+  # This does nothing because all levels already there but include for completeness 
+  complete(
+    genotype = levels(genotype),
+    trait = levels(trait),
+    environment = levels(environment),
+    fill = list(value = NA)
+  ) %>%
+  mutate(
+    g = as.integer(factor(genotype, levels = genotypes)),
+    t = as.integer(factor(trait, levels = traits_growth_chamber)),
+    e = as.integer(factor(environment))
+  ) %>%
+  arrange(e, t, g)
+
+### Get rows with NAs 
+NAs <- 
+  data_growth_chamber$value %>%
+  is.na() %>%
+  which()
+
+### Build the list
+list_growth_chamber <- list(
+  # Dimensions 
+  N = length(data_growth_chamber$value[-NAs]),
+  N_p = length(data_growth_chamber$value[NAs]),
+  P = 1,
+  G = max(data_growth_chamber$g),
+  E = max(data_growth_chamber$e),
+  T = max(data_growth_chamber$t),
+  T_a = 0, # only 1 environment, so no pooling
+  q = 4,
+  # In Sample 
+  g_idx = data_growth_chamber$g[-NAs], 
+  e_idx = data_growth_chamber$e[-NAs],   
+  t_idx = data_growth_chamber$t[-NAs],   
+  y = data_growth_chamber$value[-NAs],
+  X = diag(1, 1),
+  K = K,
+  # Out of sample
+  g_idx_p = data_growth_chamber$g[NAs], 
+  e_idx_p = data_growth_chamber$e[NAs],   
+  t_idx_p = data_growth_chamber$t[NAs]  
+)
+
+###
+### Combined Datasets and List 
+###
+
+traits_all <-
+  c(
+    traits_common_garden, 
+    traits_physiology_study, 
+    traits_growth_chamber
+    ) %>%
+  unique()
+
+data_all <-
+  rbind(
+    data_common_garden,
+    data_physiology,
+    data_growth_chamber
+  ) %>%
+  mutate(trait = factor(trait, 
+                        levels = traits_all, 
+                        labels = traits_all),
+         t = as.integer(trait),
+         e = as.integer(environment),
+         g = as.integer(factor(genotype, levels = genotypes))) %>%
+  arrange(e, t, g)
+
+
+### Get rows with NAs 
+NAs <- 
+  data_all$value %>%
+  is.na() %>%
+  which()
+
+### Build the list
+list_all <- list(
+  # Dimensions 
+  N = length(data_all$value[-NAs]),
+  N_p = length(data_all$value[NAs]),
+  P = ncol(data_list$X),
+  G = max(data_all$g),
+  E = max(data_all$e),
+  T = max(data_all$t),
+  T_a = 6,
+  q = 4,
+  # In Sample 
+  g_idx = data_all$g[-NAs], 
+  e_idx = data_all$e[-NAs],   
+  t_idx = data_all$t[-NAs],   
+  y = data_all$value[-NAs],
+  X = data_list$X,
+  K = K,
+  # Out of sample
+  g_idx_p = data_all$g[NAs], 
+  e_idx_p = data_all$e[NAs],   
+  t_idx_p = data_all$t[NAs]
+)
+```
+
+## Fit Models  
+
+```{r, Fit Models Bromus tectorum}
+            
+### Hyperparameters 
+chains <- 3
+parallel_chains <- 3
+iter_warmup <- 200
+iter_sampling <- 1000
+refresh <- 100
+
+###
+### Fit Kinship Ordination  
+###
+
+KO_fit <- 
+  fit_model(
+    list_all,
+    dir = dir,
+    chains, iter_warmup, iter_sampling, refresh,
+    model = c("KO"),
+    pathfinder = TRUE
+  )
+
+### Check convergence of identifiable quantities 
+hist(KO_fit$summary("beta")$rhat)
+hist(KO_fit$summary("H2")$rhat)
+hist(KO_fit$summary("sigma2")$rhat)
+hist(KO_fit$summary("sigma2_sigma2")$rhat)
+hist(KO_fit$summary("mu_sigma2")$rhat)
+hist(KO_fit$summary("y_pred")$rhat)
+
+### not identifiable, but might be stable just by chance 
+hist(KO_fit$summary("W")$rhat)
+hist(KO_fit$summary("zeta2")$rhat)
+hist(KO_fit$summary("eta")$rhat)
+
+### Load model if already fit
+# saveRDS(KO_fit, file.path(dir, "Outputs", "KO_fit_q4.rds"))
+# KO_fit <- readRDS(file.path(dir, "Outputs", "KO_fit_q4.rds"))
+            
+
+###
+### Fit Multivariate Mixed Model to experiments independently  
+###
+
+### Common gardens 
+MMM_fit_CG <- 
+  fit_model(
+    list_common_garden,
+    dir = dir,
+    chains, iter_warmup, iter_sampling, refresh,
+    model = c("MMM"),
+    pathfinder = TRUE
+  )
+
+### Check convergence of identifiable quantities 
+hist(MMM_fit_CG$summary("beta")$rhat)
+hist(MMM_fit_CG$summary("H2")$rhat)
+hist(MMM_fit_CG$summary("zeta2")$rhat)
+hist(MMM_fit_CG$summary("sigma2")$rhat)
+hist(MMM_fit_CG$summary("sigma2_sigma2")$rhat)
+hist(MMM_fit_CG$summary("mu_sigma2")$rhat)
+
+
+### Save fit
+# saveRDS(MMM_fit_CG, file.path(dir, "Outputs", "MMM_fit_CG.rds"))
+# readRDS(file.path(dir, "Outputs", "MMM_fit_CG.rds"))
+
+### Growth Chamber
+MMM_fit_GC <- 
+  fit_model(
+    list_growth_chamber,
+    dir = dir,
+    chains, iter_warmup, iter_sampling, refresh,
+    model = c("MMM"),
+    pathfinder = FALSE
+  )
+
+### Check convergence of identifiable quantities 
+hist(MMM_fit_GC$summary("beta")$rhat)
+hist(MMM_fit_GC$summary("H2")$rhat)
+hist(MMM_fit_GC$summary("sigma2")$rhat)
+hist(MMM_fit_GC$summary("zeta2")$rhat)
+
+### Save fit
+# saveRDS(MMM_fit_GC, file.path(dir, "Outputs", "MMM_fit_GC.rds"))
+# readRDS(file.path(dir, "Outputs", "MMM_fit_GC.rds"))
+
+### Physiology study 
+MMM_fit_PS <- 
+  fit_model(
+    list_physiology_study,
+    dir = dir,
+    chains, iter_warmup, iter_sampling, refresh,
+    model = c("MMM"),
+    pathfinder = TRUE
+  )
+
+### Check convergence of identifiable quantities 
+hist(MMM_fit_PS$summary("beta")$rhat)
+hist(MMM_fit_PS$summary("H2")$rhat)
+hist(MMM_fit_PS$summary("sigma2")$rhat)
+hist(MMM_fit_PS$summary("zeta2")$rhat)
+
+### Save fit
+# saveRDS(MMM_fit_PS, file.path(dir, "Outputs", "MMM_fit_PS.rds"))
+# readRDS(file.path(dir, "Outputs", "MMM_fit_PS.rds"))
+
+```
+
+## Heritability Plot 
+   
+```{r, Heritability Plot }     
+
+###
+### Load Model Fits & Metadata
+###
+
+### Model Fits 
+KO_fit <- readRDS(file.path(dir, "Outputs", "KO_fit_q4.rds"))
+MMM_fit_CG <- readRDS(file.path(dir, "Outputs", "MMM_fit_CG.rds"))
+MMM_fit_GC <- readRDS(file.path(dir, "Outputs", "MMM_fit_GC.rds"))
+MMM_fit_PS <- readRDS(file.path(dir, "Outputs", "MMM_fit_PS.rds"))
+
+### Metadata 
+load(file=file.path(dir, "Outputs", "data_list.RData"))
+
+### Bring in data on environments 
+Environments_classification <- 
+  data_list$Environments_classification %>%
+  mutate(density=if_else(density=="hi", "High", "Low"),
+         gravel=if_else(albedo=="black", "Black", "White"),
+         treatment=paste(density, gravel, sep=" "),
+         site=case_when(site=="BA" ~ "Baltzor",
+                        site=="CH" ~ "Cheyenne",
+                        site=="SS" ~ "Sheep Station",
+                        site=="WI" ~ "Wildcat"),
+         environment=environment) %>%
+  mutate(
+    environment_text = paste(site, treatment, sep=", "),
+    environment_text = factor(environment_text, levels = c(
+    "Sheep Station, High White", "Sheep Station, Low White", "Sheep Station, High Black", "Sheep Station, Low Black",
+    "Cheyenne, High White", "Cheyenne, Low White", "Cheyenne, High Black", "Cheyenne, Low Black",
+    "Baltzor, High White", "Baltzor, Low White", "Baltzor, High Black", "Baltzor, Low Black",
+    "Wildcat, High White", "Wildcat, Low White", "Wildcat, High Black", "Wildcat, Low Black"
+  ))) %>%
+  rbind(
+    tibble(
+      site = "Growth Chamber",
+      density = NA,
+      albedo = NA,
+      environment = 17L,
+      gravel = NA,
+      treatment = NA,
+      environment_text = factor("Growth Chamber", levels=c("Growth Chamber"))
+    )
+  ) %>%
+  mutate(environment=as.character(environment))
+
+
+###
+### Create tibbles 
+###
+
+### Kinship ordination 
+H2_KO <-
+  KO_fit$summary("H2") %>%
+  # Extract trait and environment indices from the "variable" column
+  extract(variable, into = c("trait", "environment"), regex = "H2\\[(\\d+),(\\d+)\\]", convert = TRUE) %>%
+  # Optionally, attach labels if you want actual trait/environment names
+  mutate(
+    Model="KO",
+    experiment = case_when(
+      trait %in% 1:6 & environment <= 16  ~ "common garden",
+      trait %in% 7:10 & environment %in% c(8, 13) ~ "physiology study",
+      trait %in% c(1:6, 11:14) & environment > 16 ~ "growth chamber"
+    ),
+    trait = levels(data_all$trait)[trait],
+    trait = factor(trait, levels=traits_all), # for ordering in plots 
+    environment = unique(data_all$environment)[environment],
+    CI_width = q95 - q5
+  ) %>%
+  left_join(
+    Environments_classification, by="environment"
+  ) %>%
+  # Filter for observed trait, environment combinations (i.e, trait "Freeze" not measured in environment 1)
+  filter(!is.na(experiment))
+
+###
+### Multivariate Mixed Model 
+###
+
+### Commom garden 
+H2_MMM_CG <-
+  MMM_fit_CG$summary("H2") %>%
+  # Extract trait and environment indices from the "variable" column
+  extract(variable, into = c("trait", "environment"), regex = "H2\\[(\\d+),(\\d+)\\]", convert = TRUE) %>%
+  # Optionally, attach labels if you want actual trait/environment names
+  mutate(
+    Model="MMM",
+    experiment = "common garden",
+    trait = traits_common_garden[trait],
+    trait = factor(trait, levels=traits_common_garden), # for ordering in plots 
+    environment = unique(data_common_garden$environment)[environment],
+    CI_width = q95 - q5
+  ) %>%
+  left_join(
+    Environments_classification, by="environment"
+  ) 
+
+### Physiology study 
+H2_MMM_PS <-
+  MMM_fit_PS$summary("H2") %>%
+  # Extract trait and environment indices from the "variable" column
+  extract(variable, into = c("trait", "environment"), regex = "H2\\[(\\d+),(\\d+)\\]", convert = TRUE) %>%
+  # Optionally, attach labels if you want actual trait/environment names
+  mutate(
+    Model="MMM",
+    experiment = "physiology study",
+    trait = traits_physiology_study[trait],
+    trait = factor(trait, levels=traits_physiology_study), # for ordering in plots 
+    environment = rep(c("8", "13"), each=length(traits_physiology_study)),
+    CI_width = q95 - q5
+  ) %>%
+  left_join(
+    Environments_classification, by="environment"
+  ) 
+
+### Growth chamber 
+H2_MMM_GC <-
+  MMM_fit_GC$summary("H2") %>%
+  # Extract trait and environment indices from the "variable" column
+  extract(variable, into = c("trait", "environment"), regex = "H2\\[(\\d+),(\\d+)\\]", convert = TRUE) %>%
+  # Optionally, attach labels if you want actual trait/environment names
+  mutate(
+    Model="MMM",
+    experiment = "growth chamber",
+    trait = traits_growth_chamber[trait],
+    trait = factor(trait, levels=traits_growth_chamber), # for ordering in plots 
+    environment = "17",
+    CI_width = q95 - q5
+  ) %>%
+  left_join(
+    Environments_classification, by="environment"
+  ) 
+
+### Combine 
+H2_MMM <-
+  rbind(
+    H2_MMM_CG,
+    H2_MMM_PS,
+    H2_MMM_GC
+  ) %>%
+  # Refactor traits 
+  mutate(
+    trait = factor(trait, levels = traits_all)
+  )
+
+### Percent difference in CI width of methods 
+(mean(H2_KO$CI_width) - mean(H2_MMM$CI_width)) / mean(H2_MMM$CI_width)
+
+### Join tibbles 
+H2 <- 
+  rbind(
+    H2_KO,
+    H2_MMM
+  ) %>%
+  mutate(
+    environment = as.integer(environment),
+    Model = factor(Model, levels = c("MMM", "KO"))
+  )
+
+### Check correlation of estimates (within traits)
+cor_results <- 
+  H2 %>%
+  filter(trait %in% traits_common_garden) %>% # Only can do this for traits observed in 3 or more environments 
+  dplyr::select(Model, environment, trait, mean) %>%
+  pivot_wider(names_from = Model, values_from = mean) %>%
+  group_by(trait) %>%
+  summarise(cor_mean = cor(MMM, KO, use = "complete.obs"),
+            .groups = "drop")
+
+### Average correlation within traits  
+mean(cor_results$cor_mean)
+
+###
+### Plot Heritability in common gardens 
+###
+
+heritability_common_gardens_plot <-
+  H2 %>%
+  filter(experiment == "common garden") %>%
+  ggplot(aes(x=trait, y=mean, ymin=q5, ymax=q95, color=Model)) +
+  facet_grid(site~density + gravel, scales = "fixed") +
+  geom_point(position = position_dodge(width = 0.9)) +
+  geom_linerange(position = position_dodge(width = 0.9)) +
+  theme_bw() +
+  xlab("Trait") +
+  ylab("Heritability") +
+  ylim(c(0,1)) +
+  theme(legend.position = "bottom", 
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  ggtitle("Common Gardens") +
+  scale_color_manual(name="Model", 
+                     labels=c("Multivariate Mixed Model", "Kinship Ordination"),
+                     values=wes_palette("Darjeeling1", 2, type = c("discrete")))
+
+### Save plot 
+ggsave(plot=heritability_common_gardens_plot, 
+       filename=file.path(dir, "Figures", "heritability_common_gardens.png"),  
+       dpi=1000, height=8, width=7)
+
+### Check correlation of posterior means across environments and traits 
+cor(
+  filter(H2, Model=="MMM", experiment=="common garden")$mean,
+  filter(H2, Model=="KO", experiment=="common garden")$mean
+)
+
+### Percent difference in credible interval widths 
+(mean(filter(H2, Model=="KO", experiment=="common garden")$CI_width) - 
+ mean(filter(H2, Model=="MMM", experiment=="common garden")$CI_width)) / 
+ mean(filter(H2, Model=="MMM", experiment=="common garden")$CI_width)
+
+
+###
+### Physiology Study
+###
+
+### Make plot of estimates 
+heritability_physiology_plot <-
+  H2 %>%
+  filter(experiment == "physiology study") %>%
+  ggplot(aes(x=trait, y=mean, ymin=q5, ymax=q95, color=Model)) +
+  facet_grid(site~density + gravel, scales = "fixed") +
+  geom_point(position = position_dodge(width = 0.9)) +
+  geom_linerange(position = position_dodge(width = 0.9)) +
+  theme_bw() +
+  xlab("Trait") +
+  ylab("Heritability") +
+  ylim(c(0,1)) +
+  theme(legend.position = "bottom", 
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  ggtitle("Physiology Study") +
+  scale_color_manual(name="Model", 
+                     labels=c("Multivariate Mixed Model", "Kinship Ordination"),
+                     values=wes_palette("Darjeeling1", 2, type = c("discrete")))
+
+### Save plot 
+ggsave(plot=heritability_physiology_plot, 
+       filename=file.path(dir, "Figures", "heritability_physiology_plot.png"),  
+       dpi=1000, height=4, width=7)
+
+### Check correlation of posterior means across environments and traits 
+cor(
+  filter(H2, Model=="MMM", experiment=="physiology study")$mean,
+  filter(H2, Model=="KO", experiment=="physiology study")$mean
+)
+
+### Percent difference in credible interval widths 
+(mean(filter(H2, Model=="KO", experiment=="physiology study")$CI_width) - 
+ mean(filter(H2, Model=="MMM", experiment=="physiology study")$CI_width)) / 
+ mean(filter(H2, Model=="MMM", experiment=="physiology study")$CI_width)
+
+###
+### Growth Chamber
+###
+
+### Make plot of estimates 
+heritability_growth_chamber_plot <- 
+  H2 %>%
+  filter(experiment == "growth chamber") %>%
+  ggplot(aes(x=trait, y=mean, ymin=q5, ymax=q95, color=Model)) +
+  geom_point(position = position_dodge(width = 0.9)) +
+  geom_linerange(position = position_dodge(width = 0.9)) +
+  theme_bw() +
+  xlab("Trait") +
+  ylab("Heritability") +
+  ylim(c(0,1)) +
+  theme(legend.position = "bottom", 
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  ggtitle("Growth Chamber") +
+  scale_color_manual(name="Model", 
+                     labels=c("Multivariate Mixed Model", "Kinship Ordination"),
+                     values=wes_palette("Darjeeling1", 2, type = c("discrete")))
+
+### Save plot 
+ggsave(plot=heritability_growth_chamber_plot, 
+       filename=file.path(dir, "Figures", "heritability_growth_chamber.png"),  
+       dpi=1000, height=4, width=7)
+
+### Check correlation of posterior means across environments and traits 
+cor(
+  filter(H2, Model=="MMM", experiment=="growth chamber")$mean,
+  filter(H2, Model=="KO", experiment=="growth chamber")$mean
+)
+
+### Percent difference in credible interval widths 
+(mean(filter(H2, Model=="KO", experiment=="growth chamber")$CI_width) - 
+ mean(filter(H2, Model=="MMM", experiment=="growth chamber")$CI_width)) / 
+ mean(filter(H2, Model=="MMM", experiment=="growth chamber")$CI_width)
+
+
+###
+### Combine all heritability estimates in one plot 
+###
+
+
+# Plot with colored facet labels based principal component value 
+colors <- c("darkblue", "white", "darkred") # Match colors in other BromeCast manuscripts 
+pc1_values = c(-3.2051, -2.0867, 0.3363, 2.3312)
+pc1_values_scaled = (pc1_values - min(pc1_values))/sum((pc1_values - min(pc1_values)))+0.25 ### To do scale and center to c(0,1)
+env_colors <- scales::gradient_n_pal(colors)
+env_colors_labels <- env_colors(pc1_values_scaled)
+
+### Plot (both methods)
+heritability_plot <-
+  H2 %>%
+  ggplot(aes(x=trait, y=mean, ymin=q5, ymax=q95, color=Model)) +
+  geom_point(position = position_dodge(width = 0.9)) +
+  geom_linerange(position = position_dodge(width = 0.9)) +
+  theme_bw() +
+  ylab("Narrow-sense Heritability") +
+  xlab("") +
+  facet_wrap2(
+    ~environment_text, 
+    scales = "free", 
+    strip = strip_themed(
+      background_x = elem_list_rect(fill = c(rep(env_colors_labels, each=4), "grey"))
+    ),
+    ncol=4, 
+    nrow=5
+  ) +
+  theme(legend.position = c(0.6, 0.05), 
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+        legend.text = element_text(size=12)) +
+  scale_color_manual(name="Model", 
+                     labels=c("Multivariate Mixed Model", "Kinship Ordination"),
+                     values=wes_palette("Darjeeling1", 2, type = c("discrete")))
+
+### Save plot 
+ggsave(plot=heritability_plot, 
+       filename=file.path("Figures", "heritability_plot.png"),  
+       dpi=200, height=10, width=9)
+```
+
+
+## Trait Selection Plot 
+
+```{r, Real Data Analysis (Exlude fitness traits)}
+
+###
+### Calculate Trait Selection Coefficients  
+###
+
+### Load model fit for PPD samples 
+KO_fit <- readRDS(file.path(dir, "Outputs", "KO_fit_q4.rds"))
+y_pred <- KO_fit$draws("y_pred")
+
+###
+### Dimensions 
+###
+
+### mcmc samples
+L = dim(y_pred)[1]
+### environments 
+E = list_all$E
+
+### Create arrays for storing posterior samples 
+Y <- array(
+  NA,
+  dim = c(list_all$G, list_all$T, list_all$E, L)
+)
+
+### Add observed traits
+CG_genotypes <- colnames(data_list$K_list[[1]]) # Extract common garden genotypes 
+data_obs <-
+  data_all %>%
+  filter(!is.na(value),
+         ### We are interested in invasion in the Intermountain West so stick with those genotypes 
+         genotype %in% CG_genotypes)  
+N <- nrow(data_obs)
+for(i in 1:N){
+  g = data_obs$g[i]
+  t = data_obs$t[i]
+  e = data_obs$e[i]
+  Y[g,t,e,] = data_obs$value[i]
+}
+
+### Add PPD
+data_pred <-
+  data_all %>%
+  filter(is.na(value),
+         ### We are interested in invasion in the Intermountain West so stick with those genotypes 
+         genotype %in% CG_genotypes)
+N_p <- nrow(data_pred)
+for(i in 1:N_p){
+  g = data_pred$g[i]
+  t = data_pred$t[i]
+  e = data_pred$e[i]
+  Y[g,t,e,] = y_pred[,1,i] ### just use one chain 
+}
+
+### Calculate log(fitness) = log(Reproduce) + log(Seed(n))
+fitness <- sign(Y[,6,,])*log(abs(Y[,6,,])) + Y[,2,,]
+
+### Store coefficients 
+S_KO <- vector("list", E)
+
+for(e in 1:E){
+  if(e %in% c(8, 13)){
+    traits = c(1, 3, 5, 7:10)
+  } else if (e == E){
+    # No Biomass or Inflorescence height because that is predicting fitness using pseudo fitness  
+    traits = c(1, 3, 5, 11:13)
+  } else {
+    traits = c(1, 3, 5)
+  }
+  pred = Y[,traits,e,]
+  T = ncol(pred)
+  S_mat = matrix(NA, T, L)
+  for(l in 1:L){
+    S_mat[,l] = lm(fitness[,e,l] ~ pred[,,l])$coefficients[-1]
+  }
+  S_KO[[e]] = S_mat
+}
+
+
+###
+### Extract and plot results 
+###
+
+### Variable Names 
+common_gardens_traits=c("FT", "Seed(m)", "Tiller(n)")
+traits_physiology_study=c("FT", "Seed(m)", "Tiller(n)", "Phenological", "Freeze", "Fv/Fm",  "SLA")
+traits_growth_chamber=c("FT", "Seed(m)", "Tiller(n)", "Height", "Growth", "Leaves(n)")
+
+Variable=c(
+  rep(common_gardens_traits, 7),
+  traits_physiology_study,
+  rep(common_gardens_traits, 4),
+  traits_physiology_study,
+  rep(common_gardens_traits, 3),
+  traits_growth_chamber
+) 
+environment=c(
+  rep(1:7, each=length(common_gardens_traits)),
+  rep(8, each=length(traits_physiology_study)),
+  rep(9:12, each=length(common_gardens_traits)),
+  rep(13, each=length(traits_physiology_study)),
+  rep(14:16, each=length(common_gardens_traits)),
+  rep(17, each=length(traits_growth_chamber))
+)
+
+### Create tibbles
+Environments_classification <- 
+  data_list$Environments_classification %>%
+  mutate(density=if_else(density=="hi", "High", "Low"),
+         gravel=if_else(albedo=="black", "Black", "White"),
+         treatment=paste(density, gravel, sep=" "),
+         site=case_when(site=="BA" ~ "Baltzor",
+                        site=="CH" ~ "Cheyenne",
+                        site=="SS" ~ "Sheep Station",
+                        site=="WI" ~ "Wildcat"),
+         environment_text=paste(site, treatment, sep=", ")) %>%
+  rbind(
+    tibble(
+      site = "Growth Chamber",
+      density = "Growth Chamber",
+      albedo = "Growth Chamber",
+      environment = 17,
+      gravel = "Growth Chamber",
+      treatment = "Growth Chamber",
+      environment_text = "Growth Chamber"
+    )
+  )
+
+selection_tibble <- 
+tibble(
+  method="KO",
+  Variable=Variable,
+  environment=environment,
+  coef=unlist(map(S_KO, ~apply(.x, 1, mean, na.rm=TRUE))),
+  upr=unlist(map(S_KO, ~apply(.x, 1, quantile, 0.95, na.rm=TRUE))),
+  lwr=unlist(map(S_KO, ~apply(.x, 1, quantile, 0.05, na.rm=TRUE)))
+) %>%
+  left_join(Environments_classification, by="environment") %>%
+  mutate(environment_text = factor(environment_text, levels = c(
+  "Sheep Station, High White", "Sheep Station, Low White", "Sheep Station, High Black", "Sheep Station, Low Black",
+  "Cheyenne, High White", "Cheyenne, Low White", "Cheyenne, High Black", "Cheyenne, Low Black",
+  "Baltzor, High White", "Baltzor, Low White", "Baltzor, High Black", "Baltzor, Low Black",
+  "Wildcat, High White", "Wildcat, Low White", "Wildcat, High Black", "Wildcat, Low Black",
+  "Growth Chamber"
+))) %>%
+  mutate(
+    Variable=factor(Variable, levels=unique(c(common_gardens_traits, traits_physiology_study, traits_growth_chamber)))
+  )
+
+# Plot with colored facet labels based principal component value 
+colors <- c("darkblue", "white", "darkred") # Match colors in other BromeCast manuscripts 
+pc1_values = c(-3.2051, -2.0867, 0.3363, 2.3312)
+pc1_values_scaled = (pc1_values - min(pc1_values))/sum((pc1_values - min(pc1_values)))+0.25 ### To do scale and center to c(0,1)
+env_colors <- scales::gradient_n_pal(colors)
+env_colors_labels <- env_colors(pc1_values_scaled)
+
+# Plot with colored facet labels using strip_themed
+selection_coefficient_plot <-
+  selection_tibble %>%
+  ggplot(aes(x = Variable, y = coef, group = interaction(Variable, method))) +
+  geom_point(shape = 19, size = 2, color = "black", position = position_dodge(width = 0.5)) +
+  geom_errorbar(aes(ymin = lwr, ymax = upr, color = (lwr > 0 | upr < 0)), 
+                width = 0.2, position = position_dodge(width = 0.5)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  facet_wrap2(
+    ~environment_text, 
+    ncol = 4,
+    nrow = 5,
+    scales = "free", 
+    strip = strip_themed(
+      background_x = elem_list_rect(fill = c(rep(env_colors_labels, each=4), "lightgrey"))
+    )
+  ) +
+  theme_bw() +
+  labs(x = "", y = "Selection Coefficient", title = element_blank()) +
+  scale_color_manual(values = c("black", "red"), guide = "none") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom")
+
+### Save plot 
+ggsave(plot=selection_coefficient_plot, 
+       filename=file.path(dir, "Figures", "selection_coefficient.png"),  
+       dpi=250, height=10, width=8)
+```
+
+## 10-fold cross-validation 
+
+### Create Folds 
+
+```{r, Create Folds 10-fold cross-validation}
+
+###
+### Data
+###
+
+### Filter for observed traits
+data_obs <-
+  data_all %>%
+  filter(!is.na(value)) %>%
+  ### Add experiments for stratification 
+  mutate(
+    experiment = case_when(
+        t %in% 1:6 & e <= 16  ~ "common garden",
+        t %in% 7:10 & e %in% c(8, 13) ~ "physiology study",
+        t %in% c(1:6, 11:14) & e > 16 ~ "growth chamber"
+      )
+  )
+
+###
+### Create Folds 
+###
+
+# Set seed for reproducibility 
+set.seed(3134)
+
+# Create the 10-fold cross-validation experiment stratifying by experiment 
+folds <- vfold_cv(
+  data_obs, 
+  v = 10,
+  strata = experiment
+)
+
+data_folds <- folds$splits %>%
+  # Use map to iterate over each rsplit object
+  map(function(split) {
+    
+    # Extract Training Data and label it
+    train_data <- training(split) %>%
+      mutate(set_type = "train")
+    
+    # Extract Testing Data and label it
+    test_data <- testing(split) %>%
+      mutate(set_type = "test")
+    
+    # Combine them vertically
+    bind_rows(train_data, test_data)
+  })
+
+# Save 
+save(data_folds, file=file.path(dir, "Outputs", "data_folds.RData"))
+```
+
+### Run Cross validation
+
+```{r, Run 10-fold cross-validation}
+
+
+###
+### Parallel Cross Validation Study
+###
+
+n_folds <- 10
+
+### Things we don't want exported 
+packages_list <- c("tidyverse", "Matrix", "abind", "cmdstanr")
+
+num_cores <- 10
+cl <- makeCluster(num_cores)
+registerDoParallel(cl)
+Start_all=Sys.time()
+metrics <-
+  foreach(m=1:n_folds,
+          .packages=packages_list,
+          .errorhandling="remove",
+          .combine="rbind") %dopar% {
+  
+            ### Set up storage tibble
+            metrics_out <-
+              tibble(
+                fold=NULL,
+                model=NULL,
+                data=NULL,
+                genotype=NULL,
+                trait=NULL,
+                environment=NULL,
+                time=NULL,
+                coverage=NULL,
+                bias=NULL,
+                sd=NULL,
+                ESS=NULL
+              )
+          
+            ### Hyperparameters 
+            chains <- 1
+            iter_warmup <- 200
+            iter_sampling <- 1000
+            refresh <- 100
+            
+            ### Functions 
+            source(file.path(dir, "algorithms", "functions.R"))
+            
+            ### Folds
+            load(file=file.path(dir, "Outputs", "data_folds.RData"))
+            ### Other Data 
+            load(file=file.path(dir, "Outputs", "data_list.RData"))
+            data_all <- data_folds[[m]]
+            
+            ### Extract true values 
+            test <- 
+              data_all %>%
+              filter(set_type == "test") 
+            
+            ### Now set testing to NA
+            data_all <-
+              data_all %>%
+              mutate(
+                value = if_else(set_type == "test", NA, value)
+              )
+
+            ### Format Data 
+            NAs <- 
+              data_all$value %>%
+              is.na() %>%
+              which()
+            
+            ### Build the list
+            list_all <- list(
+              # Dimensions 
+              N = length(data_all$value[-NAs]),
+              N_p = length(data_all$value[NAs]),
+              P = ncol(data_list$X),
+              G = max(data_all$g),
+              E = max(data_all$e),
+              T = max(data_all$t),
+              T_a = 6,
+              q = 4,
+              # In Sample 
+              g_idx = data_all$g[-NAs], 
+              e_idx = data_all$e[-NAs],   
+              t_idx = data_all$t[-NAs],   
+              y = data_all$value[-NAs],
+              X = data_list$X,
+              K = data_list$K[[2]],
+              # Out of sample
+              g_idx_p = data_all$g[NAs], 
+              e_idx_p = data_all$e[NAs],   
+              t_idx_p = data_all$t[NAs]
+            )
+            
+            # Define the models to fit (only doing low-rank methods MMM too time consuming)
+            models <- c("KO", "CO", "UO", "CCO")
+
+            ###
+            ### Fit Ordination Models
+            ###
+            
+            metrics <- map_dfr(models, function(m) {
+              
+              cat(paste("\n--- Fitting Model:", m, "---\n"))
+  
+              # Fit the current model (m)
+              fit <- fit_model(
+                list_all,
+                chains = chains,
+                dir = dir, 
+                iter_warmup = iter_warmup,
+                iter_sampling = iter_sampling,
+                refresh = refresh,
+                model = c(m),  
+                pathfinder = TRUE
+              )
+              
+              # Extract performance metrics
+              metrics <- extract_performance_CV(
+                fit,
+                m,
+                test
+              )
+              
+              # Return the combined metrics tibble for this model
+              return(metrics)
+            }) 
+            
+  
+
+            cat(m, "")
+            return(metrics)
+
+}
+End_all <- Sys.time() # 3.43 hours 
+difftime(End_all, Start_all)
+
+# save metrics 
+save(metrics, file=file.path(dir, "Outputs", "metrics_CV10.RData"))
+
+metrics_summary <- metrics %>%
+  mutate(
+    ESR = log10( ess_bulk / time )
+  ) %>%
+  group_by(trait, model) %>%
+  summarise(
+    mean_coverage = mean(as.numeric(coverage)),  # coverage is logical, convert to numeric
+    mean_bias     = mean(bias, na.rm = TRUE),
+    mean_sd       = mean(sd, na.rm = TRUE),
+    mean_ESR      = mean(ESR, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+### Make Cross Validation Plots 
+
+```{r, Make Cross Validation Plots}
+
+###
+### Make Plots 
+###
+
+
+### Inputs   
+load(file=file.path(dir, "Outputs", "metrics_CV10.RData"))
+
+### Cross validation (average over folds and environments) means
+CV_boxblot <-
+  metrics %>%
+  mutate(esr = log10( ess_bulk / time ),
+         trait=factor(trait, levels=c("FT", "Seed(n)", "Seed(m)", "Biomass", "Tiller(n)", "Survival",
+                                      "Phenological", "Freeze", "Fv/Fm", "SLA",
+                                      "Height", "Growth", "Leaves(n)", "Inflorescence(h)"))) %>% 
+  group_by(model, trait, genotype) %>%
+  summarise(across(c("sd", "bias", "coverage", "esr"), mean)) %>%
+    ### Remove some outliers for cleaner plotting 
+  filter(coverage>0.8,
+         bias<2.5,
+         esr<2) %>%
+  gather(key="metric", value="value", -c("model":"genotype")) %>%
+  mutate(metric=case_when(metric=="bias" ~ "Bias",
+                          metric=="coverage" ~ "Coverage",
+                          metric=="sd" ~ "Variability",
+                          metric=="esr" ~ "Efficiency"),
+         metric=factor(metric, 
+                       levels=c("Coverage", "Bias", "Variability", "Efficiency"),
+                       labels=c("Coverage", "Bias", "Variability", "Efficiency")),
+         model=factor(model, 
+                      levels = c("KO", "CCO", "CO", "UO"),
+                      labels = c("Kinship Ordination", 
+                                 "Concurrent Ordination", 
+                                 "Constrained Ordination",
+                                 "Unconstrained Ordination"))) %>%
+  filter(!is.na(value),
+         !is.na(metric)) %>%
+  ggplot(aes(x=trait, y=value, fill=model)) +
+    facet_wrap(~metric, scales = "free_y", nrow=4) +
+    #facet_grid(metric~Sigma, scale = "free") +  # results facet by correlation 
+    geom_boxplot(outlier.shape = NA) +
+    theme_bw() +
+    theme(legend.position = "bottom") +
+    xlab("") +
+    ylab("") +
+    ggtitle("") +
+    scale_fill_manual(name="Model", 
+                      values=wes_palette("Darjeeling1", 5, type = c("discrete"))[2:5])
+
+ggsave(plot=CV_boxblot, 
+       filename=file.path(dir, "Figures", "CV_boxblot.png"),  
+       dpi=1000, height=8, width=13)
+
+```
+
