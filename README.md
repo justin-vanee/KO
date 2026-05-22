@@ -41,7 +41,7 @@ This contains all the code for reproducing our data reconciliation analysis of B
 
 ## Data Preparation (need to run for all scripts below)
 
-This create the various lists for fitting the described models using Stan. The multivariate mixed model cannot be fit to the full-dataset so separate lists are created for each experiment. As indicated, must sections below this one depend on these lists or the data frames themselves, so need to run it first. 
+This create the various lists for fitting the described models using Stan. The multivariate mixed model cannot be fit to the full-dataset so separate lists are created for each experiment. As indicated, most sections below this one depend on these lists or the data frames themselves, so need to run it first. 
 
 ## Fit Models  
 
@@ -49,7 +49,7 @@ Fits the KO and MMM models and checks convergence with histograms of Rhat values
 
 ## Heritability Plot 
 
-Combines the heritability results for the four model fits (KO fit to all data, MMM fit separately to growth chamber, common gardens, physiology experiments) and compares estimates in terms of precision and congruence. Create one plot of all heritability estimates and intervals for both methods. 
+Combines the heritability results for the four model fits (KO fit to all data, MMM fit separately to growth chamber, common gardens, physiology experiments) and compares estimates in terms of precision and congruence. Creates one plot of all heritability estimates and intervals for both methods. 
 
 ## Trait Selection Plot
 
@@ -57,4 +57,4 @@ Calls the posterior predictive distributions for trait means of the 93 genotypes
 
 ## 10-fold cross-validation
 
-Again, split into three self-explanatory sections. The study takes a long time (even in parallel) because of the MMM. Without the MMM, it can finish in around 2 hours. The folds for cross validation are stratified by experiment to prevent all physiology traits, for example, from appearing in one fold. 
+Split into three self-explanatory sections. The cross-validation study takes a long time (even in parallel) because of the MMM. Without the MMM, it can finish in around 2 hours. The folds for cross validation are stratified by experiment to prevent all physiology traits, for example, from appearing in one fold. 
