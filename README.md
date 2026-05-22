@@ -5,7 +5,7 @@ The algorithms contains five .stan model statements for our kinship ordination m
 
 Outputs is the default save location for all temporary R objects produced in code.RMD. The cleaned data for the Brooms tectorum analysis is preloaded in this folder for convenience. 
 
-Figures is the daft save location for all figures created in code.RMD. 
+Figures is the default save location for all figures created in code.RMD. 
 
 Data contains the raw data for these analyses. Note that these files are also housed on the GitHub of Peter B. Adler and Megan L. Vahsen, and we recommend checking those pages for all data associated with BromeCast. 
 
