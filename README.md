@@ -1,5 +1,6 @@
 # KO
-Code and data for fitting models in Method in Ecology &amp; Evolution Paper [*Data Reconciliation in Multi-Trait Experiments with Kinship Ordination*]([https://doi.org/your-doi-here](https://besjournals.onlinelibrary.wiley.com/doi/10.1111/2041-210x.70284)).
+Code and data for fitting models in Methods in Ecology & Evolution paper
+[*Data Reconciliation in Multi-Trait Experiments with Kinship Ordination*](https://besjournals.onlinelibrary.wiley.com/doi/10.1111/2041-210x.70284).
 
 The algorithms contains five .stan model statements for our kinship ordination model (KO) as well as unconstrained ordination (UO), constrained ordination (CO), concurrent ordination (CCO), and the multivariate mixed model (MMM). In addition, there is also functions.R which is a collection of functions referenced in code.RMD for simulating data, fitting models, and extracting performance. 
 
